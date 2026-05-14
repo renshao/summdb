@@ -1,0 +1,3 @@
+[workspace]
+members = ["summdb-core", "summdb-storage", "summdb-server"]
+resolver = "2"

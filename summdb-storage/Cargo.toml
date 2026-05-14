@@ -1,0 +1,8 @@
+[package]
+name = "summdb-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+summdb-core = { path = "../summdb-core" }
+redb = "2"
