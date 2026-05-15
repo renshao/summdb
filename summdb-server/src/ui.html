@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>summdb</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    body { padding: 1rem 2rem; }
+    h1.logo { letter-spacing: 0.15em; font-size: 1.8rem; margin: 0 0 1rem; }
+    .layout { display: grid; grid-template-columns: 320px 1fr; gap: 2rem; align-items: start; }
+    .tag-item {
+      cursor: pointer;
+      padding: 0.3rem 0.6rem;
+      border-radius: 4px;
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .tag-item:hover { background: var(--pico-secondary-background); }
+    .tag-item.active { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+    .layer {
+      font-family: var(--pico-font-family-monospace);
+      font-size: 0.8rem;
+      padding: 0.3rem 0.6rem;
+      background: var(--pico-card-sectioning-background-color);
+      margin: 0.15rem 0;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    .muted { color: var(--pico-muted-color); font-style: italic; }
+    code { word-break: break-all; }
+    article p { margin-bottom: 0.6rem; }
+  </style>
+</head>
+<body x-data="summdb()">
+  <h1 class="logo">summdb</h1>
+
+  <div class="layout">
+    <section>
+      <form @submit.prevent="loadTags()">
+        <input x-model="repo" type="text" placeholder="repo (e.g. library/ubuntu)" autofocus>
+      </form>
+      <p class="muted" x-show="status" x-text="status"></p>
+      <template x-for="t in tags.slice(0, 50)" :key="t.tag">
+        <div class="tag-item"
+             :class="{ active: activeDigest === t.digest }"
+             @click="loadManifest(t.digest)">
+          <strong x-text="t.tag"></strong>
+          <small x-text="shortDigest(t.digest)"></small>
+        </div>
+      </template>
+    </section>
+
+    <article>
+      <template x-if="!manifest">
+        <p class="muted">select a tag to view its manifest</p>
+      </template>
+
+      <template x-if="manifest">
+        <div>
+          <p><small>digest</small><br><code x-text="manifest.digest"></code></p>
+          <p><small>repo</small><br><span x-text="manifest.repo"></span></p>
+          <p><small>media type</small><br><code x-text="manifest.media_type"></code></p>
+          <p><small>size</small><br><span x-text="manifest.size.toLocaleString() + ' bytes'"></span></p>
+          <p><small>platform</small><br>
+            <span x-text="manifest.platform ? manifest.platform.os + '/' + manifest.platform.arch : '—'"></span>
+          </p>
+          <p><small x-text="'layers (' + manifest.layers.length + ')'"></small></p>
+          <template x-if="manifest.layers.length === 0">
+            <p class="muted">none (index manifest)</p>
+          </template>
+          <template x-for="l in manifest.layers" :key="l">
+            <div class="layer" x-text="l"></div>
+          </template>
+        </div>
+      </template>
+    </article>
+  </div>
+
+  <script>
+    function summdb() {
+      return {
+        repo: '',
+        tags: [],
+        manifest: null,
+        activeDigest: null,
+        status: '',
+        async loadTags() {
+          if (!this.repo.trim()) return;
+          this.tags = [];
+          this.manifest = null;
+          this.activeDigest = null;
+          this.status = 'loading…';
+          try {
+            const r = await fetch(`/v1/repos/${encodeURIComponent(this.repo)}/tags`);
+            if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+            this.tags = await r.json();
+            const more = this.tags.length > 50 ? ' (showing 50)' : '';
+            this.status = `${this.tags.length} tag${this.tags.length === 1 ? '' : 's'}${more}`;
+          } catch (e) {
+            this.status = `error: ${e.message}`;
+          }
+        },
+        async loadManifest(digest) {
+          this.activeDigest = digest;
+          this.manifest = null;
+          try {
+            const r = await fetch(
+              `/v1/repos/${encodeURIComponent(this.repo)}/manifests/${encodeURIComponent(digest)}`
+            );
+            if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+            this.manifest = await r.json();
+          } catch (e) {
+            this.status = `error: ${e.message}`;
+          }
+        },
+        shortDigest(d) {
+          return d.startsWith('sha256:') ? d.slice(7, 19) : d.slice(0, 12);
+        }
+      };
+    }
+  </script>
+</body>
+</html>
