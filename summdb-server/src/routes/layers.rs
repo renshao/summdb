@@ -18,7 +18,7 @@ async fn get_layer(
 ) -> Result<Json<LayerRecord>, AppError> {
     match state.storage.get(&layer_key(&layer_digest))? {
         Some(v) => {
-            let record: LayerRecord = serde_json::from_slice(&v)
+            let record: LayerRecord = postcard::from_bytes(&v)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(Json(record))
         }
@@ -31,14 +31,14 @@ async fn get_layer_manifests(
     Path(layer_digest): Path<String>,
 ) -> Result<Json<Vec<ManifestRecord>>, AppError> {
     let layer = match state.storage.get(&layer_key(&layer_digest))? {
-        Some(v) => serde_json::from_slice::<LayerRecord>(&v)
+        Some(v) => postcard::from_bytes::<LayerRecord>(&v)
             .map_err(|e| AppError::Internal(e.to_string()))?,
         None => return Ok(Json(vec![])),
     };
     let mut manifests = Vec::with_capacity(layer.manifests.len());
     for r in layer.manifests {
         if let Some(v) = state.storage.get(&manifest_key(&r.repo, &r.digest))? {
-            let record: ManifestRecord = serde_json::from_slice(&v)
+            let record: ManifestRecord = postcard::from_bytes(&v)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
             manifests.push(record);
         }

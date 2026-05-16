@@ -208,7 +208,7 @@ fn process_manifest<'a>(
             };
             db.put(
                 &manifest_key(repo, &mr.digest),
-                &serde_json::to_vec(&record)?,
+                &postcard::to_allocvec(&record)?,
             )?;
             for child in idx.manifests {
                 bar.set_message(format!("{repo} child {}", short(&child.digest)));
@@ -241,7 +241,7 @@ fn process_manifest<'a>(
             };
             db.put(
                 &manifest_key(repo, &mr.digest),
-                &serde_json::to_vec(&record)?,
+                &postcard::to_allocvec(&record)?,
             )?;
             for d in layer_descs {
                 record_layer_ref(db, &d.digest, d.size, repo, &mr.digest)?;
@@ -271,7 +271,7 @@ fn record_layer_ref(
         &layer_key(layer_digest),
         Box::new(move |current| {
             let mut record = current
-                .and_then(|b| serde_json::from_slice::<LayerRecord>(&b).ok())
+                .and_then(|b| postcard::from_bytes::<LayerRecord>(&b).ok())
                 .unwrap_or(LayerRecord { size, manifests: vec![] });
             if record.size == 0 {
                 record.size = size;
@@ -279,7 +279,7 @@ fn record_layer_ref(
             if !record.manifests.iter().any(|m| m == &manifest_ref) {
                 record.manifests.push(manifest_ref);
             }
-            serde_json::to_vec(&record).map_err(|e| SummError::InvalidData(e.to_string()))
+            postcard::to_allocvec(&record).map_err(|e| SummError::InvalidData(e.to_string()))
         }),
     )?;
     Ok(())

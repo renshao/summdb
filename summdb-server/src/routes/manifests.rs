@@ -53,7 +53,7 @@ async fn put_manifest(
         layers: layer_digests,
     };
     let key = manifest_key(&repo, &digest);
-    let value = serde_json::to_vec(&record)
+    let value = postcard::to_allocvec(&record)
         .map_err(|e| AppError::Internal(e.to_string()))?;
     state.storage.put(&key, &value)?;
 
@@ -71,7 +71,7 @@ async fn get_manifest(
     let key = manifest_key(&repo, &digest);
     match state.storage.get(&key)? {
         Some(v) => {
-            let record: ManifestRecord = serde_json::from_slice(&v)
+            let record: ManifestRecord = postcard::from_bytes(&v)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(Json(record))
         }
@@ -87,7 +87,7 @@ async fn list_manifests(
     let entries = state.storage.scan_prefix(&prefix)?;
     let mut manifests = Vec::with_capacity(entries.len());
     for (_, v) in entries {
-        let record: ManifestRecord = serde_json::from_slice(&v)
+        let record: ManifestRecord = postcard::from_bytes(&v)
             .map_err(|e| AppError::Internal(e.to_string()))?;
         manifests.push(record);
     }
@@ -109,7 +109,7 @@ pub fn record_layer_ref(
         &layer_key(layer_digest),
         Box::new(move |current| {
             let mut record = current
-                .and_then(|b| serde_json::from_slice::<LayerRecord>(&b).ok())
+                .and_then(|b| postcard::from_bytes::<LayerRecord>(&b).ok())
                 .unwrap_or(LayerRecord { size, manifests: vec![] });
             if record.size == 0 {
                 record.size = size;
@@ -117,7 +117,7 @@ pub fn record_layer_ref(
             if !record.manifests.iter().any(|m| m == &manifest_ref) {
                 record.manifests.push(manifest_ref);
             }
-            serde_json::to_vec(&record).map_err(|e| SummError::InvalidData(e.to_string()))
+            postcard::to_allocvec(&record).map_err(|e| SummError::InvalidData(e.to_string()))
         }),
     )?;
     Ok(())
