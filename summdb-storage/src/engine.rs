@@ -5,4 +5,9 @@ pub trait StorageEngine: Send + Sync + 'static {
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
     fn delete(&self, key: &str) -> Result<()>;
     fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>>;
+    fn merge(
+        &self,
+        key: &str,
+        f: Box<dyn FnOnce(Option<Vec<u8>>) -> Result<Vec<u8>> + Send>,
+    ) -> Result<()>;
 }

@@ -7,8 +7,9 @@ use anyhow::{Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use summdb_core::{
-    keys::{manifest_key, tag_key},
-    types::{ManifestRecord, Platform},
+    error::SummError,
+    keys::{layer_key, manifest_key, tag_key},
+    types::{LayerRecord, ManifestRecord, ManifestRef, Platform},
 };
 use summdb_storage::StorageEngine;
 use tokio::sync::Semaphore;
@@ -41,6 +42,8 @@ struct ImageManifest {
 #[derive(Deserialize)]
 struct Descriptor {
     digest: String,
+    #[serde(default)]
+    size: u64,
 }
 
 pub async fn import(
@@ -225,19 +228,24 @@ fn process_manifest<'a>(
         } else {
             let img: ImageManifest =
                 serde_json::from_slice(&mr.body).context("parsing image manifest")?;
-            let layers = img.layers.into_iter().map(|d| d.digest).collect();
+            let layer_descs = img.layers;
+            let layer_digests: Vec<String> =
+                layer_descs.iter().map(|d| d.digest.clone()).collect();
             let record = ManifestRecord {
                 repo: repo.to_string(),
                 digest: mr.digest.clone(),
                 media_type: mr.media_type.clone(),
                 size: mr.body.len() as u64,
                 platform: platform_hint,
-                layers,
+                layers: layer_digests,
             };
             db.put(
                 &manifest_key(repo, &mr.digest),
                 &serde_json::to_vec(&record)?,
             )?;
+            for d in layer_descs {
+                record_layer_ref(db, &d.digest, d.size, repo, &mr.digest)?;
+            }
         }
         Ok(())
     })
@@ -246,4 +254,33 @@ fn process_manifest<'a>(
 fn is_index(mt: &str) -> bool {
     mt == "application/vnd.oci.image.index.v1+json"
         || mt == "application/vnd.docker.distribution.manifest.list.v2+json"
+}
+
+fn record_layer_ref(
+    db: &dyn StorageEngine,
+    layer_digest: &str,
+    size: u64,
+    repo: &str,
+    manifest_digest: &str,
+) -> Result<()> {
+    let manifest_ref = ManifestRef {
+        repo: repo.to_string(),
+        digest: manifest_digest.to_string(),
+    };
+    db.merge(
+        &layer_key(layer_digest),
+        Box::new(move |current| {
+            let mut record = current
+                .and_then(|b| serde_json::from_slice::<LayerRecord>(&b).ok())
+                .unwrap_or(LayerRecord { size, manifests: vec![] });
+            if record.size == 0 {
+                record.size = size;
+            }
+            if !record.manifests.iter().any(|m| m == &manifest_ref) {
+                record.manifests.push(manifest_ref);
+            }
+            serde_json::to_vec(&record).map_err(|e| SummError::InvalidData(e.to_string()))
+        }),
+    )?;
+    Ok(())
 }

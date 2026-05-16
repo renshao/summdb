@@ -6,18 +6,27 @@ use axum::{
 };
 use serde::Deserialize;
 use summdb_core::{
-    keys::{manifest_key, manifest_prefix},
-    types::{ManifestRecord, Platform},
+    error::SummError,
+    keys::{layer_key, manifest_key, manifest_prefix},
+    types::{LayerRecord, ManifestRecord, ManifestRef, Platform},
 };
+use summdb_storage::StorageEngine;
 
 use crate::{error::AppError, state::AppState};
+
+#[derive(Deserialize)]
+pub struct LayerInput {
+    pub digest: String,
+    #[serde(default)]
+    pub size: u64,
+}
 
 #[derive(Deserialize)]
 pub struct PutManifestBody {
     pub media_type: String,
     pub size: u64,
     pub platform: Option<Platform>,
-    pub layers: Vec<String>,
+    pub layers: Vec<LayerInput>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -34,18 +43,24 @@ async fn put_manifest(
     Path((repo, digest)): Path<(String, String)>,
     Json(body): Json<PutManifestBody>,
 ) -> Result<StatusCode, AppError> {
+    let layer_digests: Vec<String> = body.layers.iter().map(|l| l.digest.clone()).collect();
     let record = ManifestRecord {
         repo: repo.clone(),
         digest: digest.clone(),
         media_type: body.media_type,
         size: body.size,
         platform: body.platform,
-        layers: body.layers,
+        layers: layer_digests,
     };
     let key = manifest_key(&repo, &digest);
     let value = serde_json::to_vec(&record)
         .map_err(|e| AppError::Internal(e.to_string()))?;
     state.storage.put(&key, &value)?;
+
+    for layer in body.layers {
+        record_layer_ref(state.storage.as_ref(), &layer.digest, layer.size, &repo, &digest)?;
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -77,4 +92,33 @@ async fn list_manifests(
         manifests.push(record);
     }
     Ok(Json(manifests))
+}
+
+pub fn record_layer_ref(
+    storage: &dyn StorageEngine,
+    layer_digest: &str,
+    size: u64,
+    repo: &str,
+    manifest_digest: &str,
+) -> Result<(), AppError> {
+    let manifest_ref = ManifestRef {
+        repo: repo.to_string(),
+        digest: manifest_digest.to_string(),
+    };
+    storage.merge(
+        &layer_key(layer_digest),
+        Box::new(move |current| {
+            let mut record = current
+                .and_then(|b| serde_json::from_slice::<LayerRecord>(&b).ok())
+                .unwrap_or(LayerRecord { size, manifests: vec![] });
+            if record.size == 0 {
+                record.size = size;
+            }
+            if !record.manifests.iter().any(|m| m == &manifest_ref) {
+                record.manifests.push(manifest_ref);
+            }
+            serde_json::to_vec(&record).map_err(|e| SummError::InvalidData(e.to_string()))
+        }),
+    )?;
+    Ok(())
 }

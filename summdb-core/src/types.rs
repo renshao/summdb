@@ -15,3 +15,15 @@ pub struct ManifestRecord {
     pub platform: Option<Platform>,
     pub layers: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestRef {
+    pub repo: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerRecord {
+    pub size: u64,
+    pub manifests: Vec<ManifestRef>,
+}

@@ -1,22 +1,45 @@
 use axum::{Json, Router, extract::{Path, State}, routing::get};
-use summdb_core::types::ManifestRecord;
+use summdb_core::{
+    keys::{layer_key, manifest_key},
+    types::{LayerRecord, ManifestRecord},
+};
 
 use crate::{error::AppError, state::AppState};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/layers/:digest/manifests", get(get_layer_manifests))
+    Router::new()
+        .route("/v1/layers/:digest", get(get_layer))
+        .route("/v1/layers/:digest/manifests", get(get_layer_manifests))
+}
+
+async fn get_layer(
+    State(state): State<AppState>,
+    Path(layer_digest): Path<String>,
+) -> Result<Json<LayerRecord>, AppError> {
+    match state.storage.get(&layer_key(&layer_digest))? {
+        Some(v) => {
+            let record: LayerRecord = serde_json::from_slice(&v)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            Ok(Json(record))
+        }
+        None => Err(AppError::NotFound),
+    }
 }
 
 async fn get_layer_manifests(
     State(state): State<AppState>,
     Path(layer_digest): Path<String>,
 ) -> Result<Json<Vec<ManifestRecord>>, AppError> {
-    let entries = state.storage.scan_prefix("M:")?;
-    let mut manifests = Vec::new();
-    for (_, v) in entries {
-        let record: ManifestRecord = serde_json::from_slice(&v)
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        if record.layers.contains(&layer_digest) {
+    let layer = match state.storage.get(&layer_key(&layer_digest))? {
+        Some(v) => serde_json::from_slice::<LayerRecord>(&v)
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+        None => return Ok(Json(vec![])),
+    };
+    let mut manifests = Vec::with_capacity(layer.manifests.len());
+    for r in layer.manifests {
+        if let Some(v) = state.storage.get(&manifest_key(&r.repo, &r.digest))? {
+            let record: ManifestRecord = serde_json::from_slice(&v)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
             manifests.push(record);
         }
     }

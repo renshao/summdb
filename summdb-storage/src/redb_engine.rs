@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition};
 use summdb_core::error::{Result, SummError};
 
 use crate::engine::StorageEngine;
@@ -52,6 +52,28 @@ impl StorageEngine for RedbEngine {
         {
             let mut table = txn.open_table(DATA).map_err(|e| SummError::Storage(e.to_string()))?;
             table.remove(key).map_err(|e| SummError::Storage(e.to_string()))?;
+        }
+        txn.commit().map_err(|e| SummError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn merge(
+        &self,
+        key: &str,
+        f: Box<dyn FnOnce(Option<Vec<u8>>) -> Result<Vec<u8>> + Send>,
+    ) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let txn = db.begin_write().map_err(|e| SummError::Storage(e.to_string()))?;
+        {
+            let mut table = txn.open_table(DATA).map_err(|e| SummError::Storage(e.to_string()))?;
+            let current = match table.get(key).map_err(|e| SummError::Storage(e.to_string()))? {
+                Some(v) => Some(v.value().to_vec()),
+                None => None,
+            };
+            let new = f(current)?;
+            table
+                .insert(key, new.as_slice())
+                .map_err(|e| SummError::Storage(e.to_string()))?;
         }
         txn.commit().map_err(|e| SummError::Storage(e.to_string()))?;
         Ok(())
