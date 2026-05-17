@@ -8,11 +8,15 @@ use serde::Deserialize;
 use summdb_core::{
     error::SummError,
     keys::{layer_key, manifest_key, manifest_prefix},
-    types::{ChildRef, LayerRecord, ManifestRecord, ManifestRef, Platform},
+    types::{ChildRef, Digest, LayerRecord, ManifestRecord, ManifestRef, Platform, RepoId},
 };
 use summdb_storage::StorageEngine;
 
-use crate::{error::AppError, state::AppState};
+use crate::{
+    error::AppError,
+    state::AppState,
+    views::{manifest_to_view, ManifestView},
+};
 
 #[derive(Deserialize)]
 pub struct LayerInput {
@@ -22,15 +26,27 @@ pub struct LayerInput {
 }
 
 #[derive(Deserialize)]
+pub struct ChildInput {
+    pub digest: String,
+    pub platform: Option<Platform>,
+}
+
+#[derive(Deserialize)]
+pub struct ParentInput {
+    pub repo: String,
+    pub digest: String,
+}
+
+#[derive(Deserialize)]
 pub struct PutManifestBody {
     pub media_type: String,
     pub size: u64,
     pub platform: Option<Platform>,
     pub layers: Vec<LayerInput>,
     #[serde(default)]
-    pub children: Vec<ChildRef>,
+    pub children: Vec<ChildInput>,
     #[serde(default)]
-    pub parent: Option<ManifestRef>,
+    pub parent: Option<ParentInput>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -44,28 +60,51 @@ pub fn router() -> Router<AppState> {
 
 async fn put_manifest(
     State(state): State<AppState>,
-    Path((repo, digest)): Path<(String, String)>,
+    Path((repo, digest_str)): Path<(String, String)>,
     Json(body): Json<PutManifestBody>,
 ) -> Result<StatusCode, AppError> {
-    let layer_digests: Vec<String> = body.layers.iter().map(|l| l.digest.clone()).collect();
+    let digest: Digest = digest_str.parse().map_err(AppError::Internal)?;
+    let repo_id = state.interner.intern(state.storage.as_ref(), &repo)?;
+
+    let mut layer_digests = Vec::with_capacity(body.layers.len());
+    for l in &body.layers {
+        layer_digests.push(l.digest.parse::<Digest>().map_err(AppError::Internal)?);
+    }
+    let mut children = Vec::with_capacity(body.children.len());
+    for c in body.children {
+        children.push(ChildRef {
+            digest: c.digest.parse::<Digest>().map_err(AppError::Internal)?,
+            platform: c.platform,
+        });
+    }
+    let parent = match body.parent {
+        Some(p) => {
+            let parent_repo_id = state.interner.intern(state.storage.as_ref(), &p.repo)?;
+            Some(ManifestRef {
+                repo: parent_repo_id,
+                digest: p.digest.parse::<Digest>().map_err(AppError::Internal)?,
+            })
+        }
+        None => None,
+    };
+
     let record = ManifestRecord {
-        repo: repo.clone(),
-        digest: digest.clone(),
+        repo: repo_id,
+        digest,
         media_type: body.media_type,
         size: body.size,
         platform: body.platform,
-        layers: layer_digests,
-        children: body.children,
-        parent: body.parent,
+        layers: layer_digests.clone(),
+        children,
+        parent,
         tags: vec![],
     };
-    let key = manifest_key(&repo, &digest);
     let value = postcard::to_allocvec(&record)
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    state.storage.put(&key, &value)?;
+    state.storage.put(&manifest_key(repo_id, &digest), &value)?;
 
-    for layer in body.layers {
-        record_layer_ref(state.storage.as_ref(), &layer.digest, layer.size, &repo, &digest)?;
+    for (layer, input) in layer_digests.iter().zip(&body.layers) {
+        record_layer_ref(state.storage.as_ref(), layer, input.size, repo_id, &digest)?;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -73,14 +112,18 @@ async fn put_manifest(
 
 async fn get_manifest(
     State(state): State<AppState>,
-    Path((repo, digest)): Path<(String, String)>,
-) -> Result<Json<ManifestRecord>, AppError> {
-    let key = manifest_key(&repo, &digest);
-    match state.storage.get(&key)? {
+    Path((repo, digest_str)): Path<(String, String)>,
+) -> Result<Json<ManifestView>, AppError> {
+    let digest: Digest = digest_str.parse().map_err(AppError::Internal)?;
+    let repo_id = match state.interner.try_lookup(&repo) {
+        Some(id) => id,
+        None => return Err(AppError::NotFound),
+    };
+    match state.storage.get(&manifest_key(repo_id, &digest))? {
         Some(v) => {
             let record: ManifestRecord = postcard::from_bytes(&v)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
-            Ok(Json(record))
+            Ok(Json(manifest_to_view(record, &state.interner)))
         }
         None => Err(AppError::NotFound),
     }
@@ -89,28 +132,31 @@ async fn get_manifest(
 async fn list_manifests(
     State(state): State<AppState>,
     Path(repo): Path<String>,
-) -> Result<Json<Vec<ManifestRecord>>, AppError> {
-    let prefix = manifest_prefix(&repo);
-    let entries = state.storage.scan_prefix(&prefix)?;
-    let mut manifests = Vec::with_capacity(entries.len());
+) -> Result<Json<Vec<ManifestView>>, AppError> {
+    let repo_id = match state.interner.try_lookup(&repo) {
+        Some(id) => id,
+        None => return Ok(Json(vec![])),
+    };
+    let entries = state.storage.scan_prefix(&manifest_prefix(repo_id))?;
+    let mut out = Vec::with_capacity(entries.len());
     for (_, v) in entries {
         let record: ManifestRecord = postcard::from_bytes(&v)
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        manifests.push(record);
+        out.push(manifest_to_view(record, &state.interner));
     }
-    Ok(Json(manifests))
+    Ok(Json(out))
 }
 
 pub fn record_layer_ref(
     storage: &dyn StorageEngine,
-    layer_digest: &str,
+    layer_digest: &Digest,
     size: u64,
-    repo: &str,
-    manifest_digest: &str,
+    repo: RepoId,
+    manifest_digest: &Digest,
 ) -> Result<(), AppError> {
     let manifest_ref = ManifestRef {
-        repo: repo.to_string(),
-        digest: manifest_digest.to_string(),
+        repo,
+        digest: *manifest_digest,
     };
     storage.merge(
         &layer_key(layer_digest),

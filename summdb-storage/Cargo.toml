@@ -7,3 +7,4 @@ edition = "2021"
 summdb-core = { path = "../summdb-core" }
 redb = "2"
 postcard = { version = "1", features = ["alloc"] }
+parking_lot = "0.12"

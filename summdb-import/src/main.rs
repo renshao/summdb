@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use summdb_storage::StorageEngine;
+use summdb_storage::{RepoInterner, StorageEngine};
 
 #[derive(Parser)]
 #[command(name = "summdb-import", about = "Import tags and manifests from an OCI registry")]
@@ -47,7 +47,8 @@ async fn main() -> anyhow::Result<()> {
         .collect::<anyhow::Result<_>>()
         .context("parsing --repo arguments")?;
     let engine = summdb_storage::RedbEngine::open(&args.db)?;
+    let interner = Arc::new(RepoInterner::load(&engine as &dyn StorageEngine)?);
     let db: Arc<dyn StorageEngine> = Arc::new(engine);
     let client = Arc::new(client::RegistryClient::new(args.registry, args.user, args.pass)?);
-    importer::import(client, db, &specs, args.parallelism).await
+    importer::import(client, db, interner, &specs, args.parallelism).await
 }

@@ -5,7 +5,10 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use summdb_core::keys::{tag_key, tag_prefix};
+use summdb_core::{
+    keys::{parse_tag_key_suffix, tag_key, tag_prefix},
+    types::Digest,
+};
 
 use crate::{error::AppError, state::AppState};
 
@@ -17,7 +20,7 @@ pub struct PutTagBody {
 #[derive(Serialize)]
 pub struct TagRecord {
     pub tag: String,
-    pub digest: String,
+    pub digest: Digest,
 }
 
 pub fn router() -> Router<AppState> {
@@ -34,7 +37,12 @@ async fn put_tag(
     Path((repo, tag)): Path<(String, String)>,
     Json(body): Json<PutTagBody>,
 ) -> Result<StatusCode, AppError> {
-    summdb_storage::ops::set_tag(state.storage.as_ref(), &repo, &tag, &body.digest)?;
+    let digest: Digest = body
+        .digest
+        .parse()
+        .map_err(|e: String| AppError::Internal(e))?;
+    let repo_id = state.interner.intern(state.storage.as_ref(), &repo)?;
+    summdb_storage::ops::set_tag(state.storage.as_ref(), repo_id, &tag, &digest)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -42,11 +50,14 @@ async fn get_tag(
     State(state): State<AppState>,
     Path((repo, tag)): Path<(String, String)>,
 ) -> Result<Json<TagRecord>, AppError> {
-    let key = tag_key(&repo, &tag);
-    match state.storage.get(&key)? {
+    let repo_id = match state.interner.try_lookup(&repo) {
+        Some(id) => id,
+        None => return Err(AppError::NotFound),
+    };
+    match state.storage.get(&tag_key(repo_id, &tag))? {
         Some(v) => {
-            let digest = String::from_utf8(v)
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let digest = Digest::from_slice(&v)
+                .map_err(AppError::Internal)?;
             Ok(Json(TagRecord { tag, digest }))
         }
         None => Err(AppError::NotFound),
@@ -57,15 +68,19 @@ async fn list_tags(
     State(state): State<AppState>,
     Path(repo): Path<String>,
 ) -> Result<Json<Vec<TagRecord>>, AppError> {
-    let prefix = tag_prefix(&repo);
-    let entries = state.storage.scan_prefix(&prefix)?;
-    let tags = entries
-        .into_iter()
-        .filter_map(|(k, v)| {
-            let tag = k.strip_prefix(&prefix)?.to_string();
-            let digest = String::from_utf8(v).ok()?;
-            Some(TagRecord { tag, digest })
-        })
-        .collect();
-    Ok(Json(tags))
+    let repo_id = match state.interner.try_lookup(&repo) {
+        Some(id) => id,
+        None => return Ok(Json(vec![])),
+    };
+    let entries = state.storage.scan_prefix(&tag_prefix(repo_id))?;
+    let mut out = Vec::with_capacity(entries.len());
+    for (k, v) in entries {
+        let Some(tag) = parse_tag_key_suffix(&k) else { continue };
+        let digest = Digest::from_slice(&v).map_err(AppError::Internal)?;
+        out.push(TagRecord {
+            tag: tag.to_string(),
+            digest,
+        });
+    }
+    Ok(Json(out))
 }

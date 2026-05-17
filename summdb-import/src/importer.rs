@@ -3,15 +3,15 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use summdb_core::{
     error::SummError,
     keys::{layer_key, manifest_key},
-    types::{ChildRef, LayerRecord, ManifestRecord, ManifestRef, Platform},
+    types::{ChildRef, Digest, LayerRecord, ManifestRecord, ManifestRef, Platform, RepoId},
 };
-use summdb_storage::StorageEngine;
+use summdb_storage::{RepoInterner, StorageEngine};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -70,6 +70,7 @@ struct Descriptor {
 pub async fn import(
     client: Arc<RegistryClient>,
     db: Arc<dyn StorageEngine>,
+    interner: Arc<RepoInterner>,
     repo_specs: &[RepoSpec],
     parallelism: usize,
 ) -> Result<()> {
@@ -125,17 +126,17 @@ pub async fn import(
         all
     };
 
-    // Build worker spinners + bottom progress bar.
     let (workers, overall) = build_progress(&multi, parallelism);
 
     for (repo, tags) in repos_with_tags {
         if tags.is_empty() {
             continue;
         }
+        let repo_id = interner.intern(db.as_ref(), &repo)?;
         overall.set_length(tags.len() as u64);
         overall.set_position(0);
         overall.set_message(repo.clone());
-        process_repo(&client, &db, &repo, &tags, &workers, &overall, parallelism).await;
+        process_repo(&client, &db, repo_id, &repo, &tags, &workers, &overall, parallelism).await;
     }
 
     overall.finish_and_clear();
@@ -171,7 +172,8 @@ fn build_progress(multi: &MultiProgress, parallelism: usize) -> (Vec<ProgressBar
 async fn process_repo(
     client: &Arc<RegistryClient>,
     db: &Arc<dyn StorageEngine>,
-    repo: &str,
+    repo_id: RepoId,
+    repo_label: &str,
     tags: &[String],
     workers: &[ProgressBar],
     overall: &ProgressBar,
@@ -188,12 +190,12 @@ async fn process_repo(
         let overall = overall.clone();
         let client = client.clone();
         let db = db.clone();
-        let repo = repo.to_string();
+        let repo_label = repo_label.to_string();
         let tag = tag.clone();
         set.spawn(async move {
-            bar.set_message(format!("{repo}:{tag}"));
-            if let Err(e) = import_tag(&client, db.as_ref(), &repo, &tag, &bar).await {
-                let _ = bar.println(format!("error {repo}:{tag}: {e:#}"));
+            bar.set_message(format!("{repo_label}:{tag}"));
+            if let Err(e) = import_tag(&client, db.as_ref(), repo_id, &repo_label, &tag, &bar).await {
+                let _ = bar.println(format!("error {repo_label}:{tag}: {e:#}"));
             }
             bar.set_message("idle");
             bar_pool.lock().unwrap().push(bar);
@@ -207,31 +209,36 @@ async fn process_repo(
 async fn import_tag(
     client: &RegistryClient,
     db: &dyn StorageEngine,
-    repo: &str,
+    repo_id: RepoId,
+    repo_label: &str,
     tag: &str,
     bar: &ProgressBar,
 ) -> Result<()> {
-    bar.set_message(format!("{repo}:{tag} fetching"));
-    let mr = client.fetch_manifest(repo, tag).await?;
-    let digest = mr.digest.clone();
-    bar.set_message(format!("{repo}:{tag} {}", short(&digest)));
-    process_manifest(client, db, repo, &mr, None, None, bar).await?;
-    summdb_storage::ops::set_tag(db, repo, tag, &digest)?;
+    bar.set_message(format!("{repo_label}:{tag} fetching"));
+    let mr = client.fetch_manifest(repo_label, tag).await?;
+    let digest: Digest = mr.digest.parse().map_err(|e: String| anyhow!(e))?;
+    bar.set_message(format!("{repo_label}:{tag} {}", short(&digest)));
+    process_manifest(client, db, repo_id, repo_label, &mr, digest, None, None, bar).await?;
+    summdb_storage::ops::set_tag(db, repo_id, tag, &digest)?;
     Ok(())
 }
 
-fn short(digest: &str) -> String {
-    digest
-        .strip_prefix("sha256:")
-        .map(|d| format!("sha256:{}", &d[..d.len().min(12)]))
-        .unwrap_or_else(|| digest.to_string())
+fn short(d: &Digest) -> String {
+    let s = d.to_string();
+    if s.len() > 19 {
+        format!("{}…", &s[..19])
+    } else {
+        s
+    }
 }
 
 fn process_manifest<'a>(
     client: &'a RegistryClient,
     db: &'a dyn StorageEngine,
-    repo: &'a str,
+    repo_id: RepoId,
+    repo_label: &'a str,
     mr: &'a ManifestResponse,
+    digest: Digest,
     platform_hint: Option<Platform>,
     parent_hint: Option<ManifestRef>,
     bar: &'a ProgressBar,
@@ -240,20 +247,20 @@ fn process_manifest<'a>(
         if is_index(&mr.media_type) {
             let idx: Index =
                 serde_json::from_slice(&mr.body).context("parsing index manifest")?;
-            let children: Vec<ChildRef> = idx
-                .manifests
-                .iter()
-                .map(|c| ChildRef {
-                    digest: c.digest.clone(),
+            let mut children = Vec::with_capacity(idx.manifests.len());
+            for c in &idx.manifests {
+                let cd: Digest = c.digest.parse().map_err(|e: String| anyhow!(e))?;
+                children.push(ChildRef {
+                    digest: cd,
                     platform: c.platform.as_ref().map(|p| Platform {
                         os: p.os.clone(),
                         arch: p.architecture.clone(),
                     }),
-                })
-                .collect();
+                });
+            }
             let record = ManifestRecord {
-                repo: repo.to_string(),
-                digest: mr.digest.clone(),
+                repo: repo_id,
+                digest,
                 media_type: mr.media_type.clone(),
                 size: mr.body.len() as u64,
                 platform: None,
@@ -263,16 +270,17 @@ fn process_manifest<'a>(
                 tags: vec![],
             };
             db.put(
-                &manifest_key(repo, &mr.digest),
+                &manifest_key(repo_id, &digest),
                 &postcard::to_allocvec(&record)?,
             )?;
             let parent_for_children = ManifestRef {
-                repo: repo.to_string(),
-                digest: mr.digest.clone(),
+                repo: repo_id,
+                digest,
             };
             for child in idx.manifests {
-                bar.set_message(format!("{repo} child {}", short(&child.digest)));
-                let child_mr = match client.fetch_manifest(repo, &child.digest).await {
+                let child_digest: Digest = child.digest.parse().map_err(|e: String| anyhow!(e))?;
+                bar.set_message(format!("{repo_label} child {}", short(&child_digest)));
+                let child_mr = match client.fetch_manifest(repo_label, &child.digest).await {
                     Ok(m) => m,
                     Err(e) => {
                         let _ = bar.println(format!("  child {} failed: {e:#}", child.digest));
@@ -286,8 +294,10 @@ fn process_manifest<'a>(
                 process_manifest(
                     client,
                     db,
-                    repo,
+                    repo_id,
+                    repo_label,
                     &child_mr,
+                    child_digest,
                     plat,
                     Some(parent_for_children.clone()),
                     bar,
@@ -298,25 +308,27 @@ fn process_manifest<'a>(
             let img: ImageManifest =
                 serde_json::from_slice(&mr.body).context("parsing image manifest")?;
             let layer_descs = img.layers;
-            let layer_digests: Vec<String> =
-                layer_descs.iter().map(|d| d.digest.clone()).collect();
+            let mut layer_digests: Vec<Digest> = Vec::with_capacity(layer_descs.len());
+            for d in &layer_descs {
+                layer_digests.push(d.digest.parse().map_err(|e: String| anyhow!(e))?);
+            }
             let record = ManifestRecord {
-                repo: repo.to_string(),
-                digest: mr.digest.clone(),
+                repo: repo_id,
+                digest,
                 media_type: mr.media_type.clone(),
                 size: mr.body.len() as u64,
                 platform: platform_hint,
-                layers: layer_digests,
+                layers: layer_digests.clone(),
                 children: vec![],
                 parent: parent_hint,
                 tags: vec![],
             };
             db.put(
-                &manifest_key(repo, &mr.digest),
+                &manifest_key(repo_id, &digest),
                 &postcard::to_allocvec(&record)?,
             )?;
-            for d in layer_descs {
-                record_layer_ref(db, &d.digest, d.size, repo, &mr.digest)?;
+            for (ld, desc) in layer_digests.iter().zip(&layer_descs) {
+                record_layer_ref(db, ld, desc.size, repo_id, &digest)?;
             }
         }
         Ok(())
@@ -330,14 +342,14 @@ fn is_index(mt: &str) -> bool {
 
 fn record_layer_ref(
     db: &dyn StorageEngine,
-    layer_digest: &str,
+    layer_digest: &Digest,
     size: u64,
-    repo: &str,
-    manifest_digest: &str,
+    repo: RepoId,
+    manifest_digest: &Digest,
 ) -> Result<()> {
     let manifest_ref = ManifestRef {
-        repo: repo.to_string(),
-        digest: manifest_digest.to_string(),
+        repo,
+        digest: *manifest_digest,
     };
     db.merge(
         &layer_key(layer_digest),

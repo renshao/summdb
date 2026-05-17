@@ -5,7 +5,7 @@ use summdb_core::error::{Result, SummError};
 
 use crate::engine::StorageEngine;
 
-const DATA: TableDefinition<&str, &[u8]> = TableDefinition::new("data");
+const DATA: TableDefinition<&[u8], &[u8]> = TableDefinition::new("data");
 
 pub struct RedbEngine {
     db: Arc<Mutex<Database>>,
@@ -14,7 +14,6 @@ pub struct RedbEngine {
 impl RedbEngine {
     pub fn open(path: &str) -> Result<Self> {
         let db = Database::create(path).map_err(|e| SummError::Storage(e.to_string()))?;
-        // Ensure the table exists before any reads
         let txn = db.begin_write().map_err(|e| SummError::Storage(e.to_string()))?;
         txn.open_table(DATA).map_err(|e| SummError::Storage(e.to_string()))?;
         txn.commit().map_err(|e| SummError::Storage(e.to_string()))?;
@@ -25,7 +24,7 @@ impl RedbEngine {
 }
 
 impl StorageEngine for RedbEngine {
-    fn put(&self, key: &str, value: &[u8]) -> Result<()> {
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let db = self.db.lock().unwrap();
         let txn = db.begin_write().map_err(|e| SummError::Storage(e.to_string()))?;
         {
@@ -36,7 +35,7 @@ impl StorageEngine for RedbEngine {
         Ok(())
     }
 
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let db = self.db.lock().unwrap();
         let txn = db.begin_read().map_err(|e| SummError::Storage(e.to_string()))?;
         let table = txn.open_table(DATA).map_err(|e| SummError::Storage(e.to_string()))?;
@@ -46,7 +45,7 @@ impl StorageEngine for RedbEngine {
         }
     }
 
-    fn delete(&self, key: &str) -> Result<()> {
+    fn delete(&self, key: &[u8]) -> Result<()> {
         let db = self.db.lock().unwrap();
         let txn = db.begin_write().map_err(|e| SummError::Storage(e.to_string()))?;
         {
@@ -59,7 +58,7 @@ impl StorageEngine for RedbEngine {
 
     fn merge(
         &self,
-        key: &str,
+        key: &[u8],
         f: Box<dyn FnOnce(Option<Vec<u8>>) -> Result<Vec<u8>> + Send>,
     ) -> Result<()> {
         let db = self.db.lock().unwrap();
@@ -79,7 +78,7 @@ impl StorageEngine for RedbEngine {
         Ok(())
     }
 
-    fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let db = self.db.lock().unwrap();
         let txn = db.begin_read().map_err(|e| SummError::Storage(e.to_string()))?;
         let table = txn.open_table(DATA).map_err(|e| SummError::Storage(e.to_string()))?;
@@ -89,7 +88,7 @@ impl StorageEngine for RedbEngine {
             if !k.value().starts_with(prefix) {
                 break;
             }
-            results.push((k.value().to_string(), v.value().to_vec()));
+            results.push((k.value().to_vec(), v.value().to_vec()));
         }
         Ok(results)
     }
