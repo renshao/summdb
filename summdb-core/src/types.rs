@@ -14,6 +14,14 @@ pub struct ManifestRecord {
     pub size: u64,
     pub platform: Option<Platform>,
     pub layers: Vec<String>,
+    #[serde(default)]
+    pub children: Vec<ChildRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildRef {
+    pub digest: String,
+    pub platform: Option<Platform>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

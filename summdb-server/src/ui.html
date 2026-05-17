@@ -40,6 +40,27 @@
       border-left: 3px solid var(--pico-primary);
       padding-left: calc(0.6rem - 3px);
     }
+    .child {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      align-items: baseline;
+      font-family: var(--pico-font-family-monospace);
+      font-size: 0.8rem;
+      padding: 0.3rem 0.6rem;
+      background: var(--pico-card-sectioning-background-color);
+      margin: 0.15rem 0;
+      border-radius: 4px;
+      color: var(--pico-color);
+      text-decoration: none;
+      cursor: pointer;
+      word-break: break-all;
+    }
+    .child:hover {
+      background: var(--pico-secondary-background);
+      text-decoration: underline;
+    }
+    .child .child-digest { color: var(--pico-muted-color); }
     .manifest-row {
       padding: 0.5rem 0.6rem;
       margin: 0.3rem 0;
@@ -87,13 +108,28 @@
             <p><small>platform</small><br>
               <span x-text="manifest.platform ? manifest.platform.os + '/' + manifest.platform.arch : '—'"></span>
             </p>
-            <p><small x-text="'layers (' + manifest.layers.length + ')'"></small></p>
-            <template x-if="manifest.layers.length === 0">
-              <p class="muted">none (index manifest)</p>
+            <template x-if="manifest.children && manifest.children.length">
+              <div>
+                <p><small x-text="'sub-manifests (' + manifest.children.length + ')'"></small></p>
+                <template x-for="c in manifest.children" :key="c.digest">
+                  <a href="#" class="child" @click.prevent="loadManifest(c.digest)">
+                    <strong x-text="c.platform ? c.platform.os + '/' + c.platform.arch : 'unknown platform'"></strong>
+                    <span class="child-digest" x-text="c.digest"></span>
+                  </a>
+                </template>
+              </div>
             </template>
-            <template x-for="l in manifest.layers" :key="l">
-              <a href="#" class="layer" :class="{ active: selectedLayer === l }"
-                 @click.prevent="loadLayer(l)" x-text="l"></a>
+            <template x-if="!(manifest.children && manifest.children.length)">
+              <div>
+                <p><small x-text="'layers (' + manifest.layers.length + ')'"></small></p>
+                <template x-if="manifest.layers.length === 0">
+                  <p class="muted">none</p>
+                </template>
+                <template x-for="l in manifest.layers" :key="l">
+                  <a href="#" class="layer" :class="{ active: selectedLayer === l }"
+                     @click.prevent="loadLayer(l)" x-text="l"></a>
+                </template>
+              </div>
             </template>
           </div>
         </template>

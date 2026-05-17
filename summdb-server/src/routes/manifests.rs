@@ -8,7 +8,7 @@ use serde::Deserialize;
 use summdb_core::{
     error::SummError,
     keys::{layer_key, manifest_key, manifest_prefix},
-    types::{LayerRecord, ManifestRecord, ManifestRef, Platform},
+    types::{ChildRef, LayerRecord, ManifestRecord, ManifestRef, Platform},
 };
 use summdb_storage::StorageEngine;
 
@@ -27,6 +27,8 @@ pub struct PutManifestBody {
     pub size: u64,
     pub platform: Option<Platform>,
     pub layers: Vec<LayerInput>,
+    #[serde(default)]
+    pub children: Vec<ChildRef>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -51,6 +53,7 @@ async fn put_manifest(
         size: body.size,
         platform: body.platform,
         layers: layer_digests,
+        children: body.children,
     };
     let key = manifest_key(&repo, &digest);
     let value = postcard::to_allocvec(&record)

@@ -9,13 +9,34 @@ use serde::Deserialize;
 use summdb_core::{
     error::SummError,
     keys::{layer_key, manifest_key, tag_key},
-    types::{LayerRecord, ManifestRecord, ManifestRef, Platform},
+    types::{ChildRef, LayerRecord, ManifestRecord, ManifestRef, Platform},
 };
 use summdb_storage::StorageEngine;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::client::{ManifestResponse, RegistryClient};
+
+pub struct RepoSpec {
+    pub repo: String,
+    pub tag_filter: Option<glob::Pattern>,
+}
+
+impl RepoSpec {
+    pub fn parse(s: &str) -> Result<Self> {
+        let (repo, glob) = match s.split_once(':') {
+            Some((r, g)) => (
+                r.to_string(),
+                Some(glob::Pattern::new(g).with_context(|| format!("invalid glob in {s:?}"))?),
+            ),
+            None => (s.to_string(), None),
+        };
+        if repo.is_empty() {
+            anyhow::bail!("empty repo name in {s:?}");
+        }
+        Ok(Self { repo, tag_filter: glob })
+    }
+}
 
 #[derive(Deserialize)]
 struct Index {
@@ -49,39 +70,59 @@ struct Descriptor {
 pub async fn import(
     client: Arc<RegistryClient>,
     db: Arc<dyn StorageEngine>,
-    repo_filter: Option<&str>,
+    repo_specs: &[RepoSpec],
     parallelism: usize,
 ) -> Result<()> {
     let multi = MultiProgress::new();
 
     // Discovery phase: figure out which repos and what tags they have.
-    let repos_with_tags: Vec<(String, Vec<String>)> = match repo_filter {
-        Some(r) => {
-            multi.println(format!("listing tags for {r}..."))?;
-            let tags = client.list_tags(r).await.context("listing tags")?;
-            multi.println(format!("found {} tag(s) in {r}", tags.len()))?;
-            vec![(r.to_string(), tags)]
+    let repos_with_tags: Vec<(String, Vec<String>)> = if repo_specs.is_empty() {
+        multi.println("listing catalog...")?;
+        let repos = client.list_catalog().await.context("listing catalog")?;
+        multi.println(format!("found {} repo(s), listing tags...", repos.len()))?;
+        let mut all = Vec::with_capacity(repos.len());
+        let mut total = 0usize;
+        for repo in repos {
+            let tags = match client.list_tags(&repo).await {
+                Ok(t) => t,
+                Err(e) => {
+                    multi.println(format!("  tags for {repo} failed: {e:#}"))?;
+                    Vec::new()
+                }
+            };
+            total += tags.len();
+            all.push((repo, tags));
         }
-        None => {
-            multi.println("listing catalog...")?;
-            let repos = client.list_catalog().await.context("listing catalog")?;
-            multi.println(format!("found {} repo(s), listing tags...", repos.len()))?;
-            let mut all = Vec::with_capacity(repos.len());
-            let mut total = 0usize;
-            for repo in repos {
-                let tags = match client.list_tags(&repo).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        multi.println(format!("  tags for {repo} failed: {e:#}"))?;
-                        Vec::new()
-                    }
-                };
-                total += tags.len();
-                all.push((repo, tags));
-            }
+        multi.println(format!("total: {total} tag(s) across {} repo(s)", all.len()))?;
+        all
+    } else {
+        let mut all = Vec::with_capacity(repo_specs.len());
+        let mut total = 0usize;
+        for spec in repo_specs {
+            let label = match &spec.tag_filter {
+                Some(p) => format!("{}:{}", spec.repo, p.as_str()),
+                None => spec.repo.clone(),
+            };
+            multi.println(format!("listing tags for {label}..."))?;
+            let tags = match client.list_tags(&spec.repo).await {
+                Ok(t) => t,
+                Err(e) => {
+                    multi.println(format!("  list_tags {} failed: {e:#}", spec.repo))?;
+                    continue;
+                }
+            };
+            let filtered: Vec<String> = match &spec.tag_filter {
+                Some(p) => tags.into_iter().filter(|t| p.matches(t)).collect(),
+                None => tags,
+            };
+            multi.println(format!("  {label}: {} tag(s)", filtered.len()))?;
+            total += filtered.len();
+            all.push((spec.repo.clone(), filtered));
+        }
+        if repo_specs.len() > 1 {
             multi.println(format!("total: {total} tag(s) across {} repo(s)", all.len()))?;
-            all
         }
+        all
     };
 
     // Build worker spinners + bottom progress bar.
@@ -198,6 +239,17 @@ fn process_manifest<'a>(
         if is_index(&mr.media_type) {
             let idx: Index =
                 serde_json::from_slice(&mr.body).context("parsing index manifest")?;
+            let children: Vec<ChildRef> = idx
+                .manifests
+                .iter()
+                .map(|c| ChildRef {
+                    digest: c.digest.clone(),
+                    platform: c.platform.as_ref().map(|p| Platform {
+                        os: p.os.clone(),
+                        arch: p.architecture.clone(),
+                    }),
+                })
+                .collect();
             let record = ManifestRecord {
                 repo: repo.to_string(),
                 digest: mr.digest.clone(),
@@ -205,6 +257,7 @@ fn process_manifest<'a>(
                 size: mr.body.len() as u64,
                 platform: None,
                 layers: vec![],
+                children,
             };
             db.put(
                 &manifest_key(repo, &mr.digest),
@@ -238,6 +291,7 @@ fn process_manifest<'a>(
                 size: mr.body.len() as u64,
                 platform: platform_hint,
                 layers: layer_digests,
+                children: vec![],
             };
             db.put(
                 &manifest_key(repo, &mr.digest),

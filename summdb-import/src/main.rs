@@ -3,6 +3,7 @@ mod importer;
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use clap::Parser;
 use summdb_storage::StorageEngine;
 
@@ -13,11 +14,13 @@ struct Args {
     #[arg(long)]
     registry: String,
 
-    /// Single repo to import. If omitted, uses the registry's _catalog endpoint.
-    #[arg(long)]
-    repo: Option<String>,
+    /// Repo to import; can be specified multiple times.
+    /// Use "repo" for all tags or "repo:GLOB" to filter (e.g. library/python:3.*).
+    /// If omitted, uses the registry's _catalog endpoint.
+    #[arg(long = "repo", value_name = "REPO[:GLOB]")]
+    repos: Vec<String>,
 
-    /// Path to summdb file
+    /// Path to the summdb file
     #[arg(long, default_value = "summdb.db")]
     db: String,
 
@@ -37,8 +40,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let specs: Vec<importer::RepoSpec> = args
+        .repos
+        .iter()
+        .map(|s| importer::RepoSpec::parse(s))
+        .collect::<anyhow::Result<_>>()
+        .context("parsing --repo arguments")?;
     let engine = summdb_storage::RedbEngine::open(&args.db)?;
     let db: Arc<dyn StorageEngine> = Arc::new(engine);
     let client = Arc::new(client::RegistryClient::new(args.registry, args.user, args.pass)?);
-    importer::import(client, db, args.repo.as_deref(), args.parallelism).await
+    importer::import(client, db, &specs, args.parallelism).await
 }
