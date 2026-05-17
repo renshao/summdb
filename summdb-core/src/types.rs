@@ -18,6 +18,8 @@ pub struct ManifestRecord {
     pub children: Vec<ChildRef>,
     #[serde(default)]
     pub parent: Option<ManifestRef>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

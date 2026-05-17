@@ -8,7 +8,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use summdb_core::{
     error::SummError,
-    keys::{layer_key, manifest_key, tag_key},
+    keys::{layer_key, manifest_key},
     types::{ChildRef, LayerRecord, ManifestRecord, ManifestRef, Platform},
 };
 use summdb_storage::StorageEngine;
@@ -216,7 +216,7 @@ async fn import_tag(
     let digest = mr.digest.clone();
     bar.set_message(format!("{repo}:{tag} {}", short(&digest)));
     process_manifest(client, db, repo, &mr, None, None, bar).await?;
-    db.put(&tag_key(repo, tag), digest.as_bytes())?;
+    summdb_storage::ops::set_tag(db, repo, tag, &digest)?;
     Ok(())
 }
 
@@ -260,6 +260,7 @@ fn process_manifest<'a>(
                 layers: vec![],
                 children,
                 parent: parent_hint,
+                tags: vec![],
             };
             db.put(
                 &manifest_key(repo, &mr.digest),
@@ -308,6 +309,7 @@ fn process_manifest<'a>(
                 layers: layer_digests,
                 children: vec![],
                 parent: parent_hint,
+                tags: vec![],
             };
             db.put(
                 &manifest_key(repo, &mr.digest),

@@ -61,6 +61,15 @@
       text-decoration: underline;
     }
     .child .child-digest { color: var(--pico-muted-color); }
+    .tag-chip {
+      display: inline-block;
+      font-family: var(--pico-font-family-monospace);
+      font-size: 0.75rem;
+      padding: 0.15rem 0.45rem;
+      margin: 0.15rem 0.2rem 0 0;
+      background: var(--pico-secondary-background);
+      border-radius: 4px;
+    }
     .manifest-row {
       padding: 0.5rem 0.6rem;
       margin: 0.3rem 0;
@@ -116,6 +125,14 @@
             <p><small>platform</small><br>
               <span x-text="manifest.platform ? manifest.platform.os + '/' + manifest.platform.arch : '—'"></span>
             </p>
+            <template x-if="manifest.tags && manifest.tags.length">
+              <p>
+                <small x-text="'tags (' + manifest.tags.length + ')'"></small><br>
+                <template x-for="t in manifest.tags" :key="t">
+                  <span class="tag-chip" x-text="t"></span>
+                </template>
+              </p>
+            </template>
             <template x-if="manifest.children && manifest.children.length">
               <div>
                 <p><small x-text="'sub-manifests (' + manifest.children.length + ')'"></small></p>

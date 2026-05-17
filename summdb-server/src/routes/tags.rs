@@ -34,8 +34,7 @@ async fn put_tag(
     Path((repo, tag)): Path<(String, String)>,
     Json(body): Json<PutTagBody>,
 ) -> Result<StatusCode, AppError> {
-    let key = tag_key(&repo, &tag);
-    state.storage.put(&key, body.digest.as_bytes())?;
+    summdb_storage::ops::set_tag(state.storage.as_ref(), &repo, &tag, &body.digest)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

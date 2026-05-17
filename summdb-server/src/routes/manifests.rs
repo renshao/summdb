@@ -57,6 +57,7 @@ async fn put_manifest(
         layers: layer_digests,
         children: body.children,
         parent: body.parent,
+        tags: vec![],
     };
     let key = manifest_key(&repo, &digest);
     let value = postcard::to_allocvec(&record)

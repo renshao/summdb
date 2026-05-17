@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 summdb-core = { path = "../summdb-core" }
 redb = "2"
+postcard = { version = "1", features = ["alloc"] }
