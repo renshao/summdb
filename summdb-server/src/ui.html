@@ -171,6 +171,14 @@
             <br>
             <small><code x-text="m.digest"></code></small><br>
             <small class="muted" x-text="m.media_type"></small>
+            <template x-if="m.displayTags && m.displayTags.length">
+              <div style="margin-top: 0.3rem">
+                <small class="muted" x-text="m.tagsSource === 'parent' ? 'parent tags:' : 'tags:'"></small>
+                <template x-for="t in m.displayTags" :key="t">
+                  <span class="tag-chip" x-text="t"></span>
+                </template>
+              </div>
+            </template>
           </div>
         </template>
       </article>
@@ -226,7 +234,8 @@
           try {
             const r = await fetch(`/v1/layers/${encodeURIComponent(digest)}/manifests`);
             if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-            this.layerManifests = await r.json();
+            const manifests = await r.json();
+            this.layerManifests = await Promise.all(manifests.map(m => this.enrichTags(m)));
             const n = this.layerManifests.length;
             this.layerStatus = `${n} manifest${n === 1 ? '' : 's'} include this layer`;
           } catch (e) {
@@ -235,6 +244,25 @@
         },
         shortDigest(d) {
           return d.startsWith('sha256:') ? d.slice(7, 19) : d.slice(0, 12);
+        },
+        async enrichTags(m) {
+          if (m.tags && m.tags.length) {
+            return { ...m, displayTags: m.tags, tagsSource: 'self' };
+          }
+          if (m.parent) {
+            try {
+              const r = await fetch(
+                `/v1/repos/${encodeURIComponent(m.parent.repo)}/manifests/${encodeURIComponent(m.parent.digest)}`
+              );
+              if (r.ok) {
+                const parent = await r.json();
+                if (parent.tags && parent.tags.length) {
+                  return { ...m, displayTags: parent.tags, tagsSource: 'parent' };
+                }
+              }
+            } catch (_) { /* swallow per-row failures */ }
+          }
+          return { ...m, displayTags: [], tagsSource: null };
         }
       };
     }
