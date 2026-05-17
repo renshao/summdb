@@ -103,6 +103,14 @@
           <div>
             <p><small>digest</small><br><code x-text="manifest.digest"></code></p>
             <p><small>repo</small><br><span x-text="manifest.repo"></span></p>
+            <template x-if="manifest.parent">
+              <p>
+                <small>parent</small><br>
+                <a href="#" @click.prevent="loadManifest(manifest.parent.digest)">
+                  <code x-text="manifest.parent.digest"></code>
+                </a>
+              </p>
+            </template>
             <p><small>media type</small><br><code x-text="manifest.media_type"></code></p>
             <p><small>size</small><br><span x-text="manifest.size.toLocaleString() + ' bytes'"></span></p>
             <p><small>platform</small><br>

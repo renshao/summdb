@@ -215,7 +215,7 @@ async fn import_tag(
     let mr = client.fetch_manifest(repo, tag).await?;
     let digest = mr.digest.clone();
     bar.set_message(format!("{repo}:{tag} {}", short(&digest)));
-    process_manifest(client, db, repo, &mr, None, bar).await?;
+    process_manifest(client, db, repo, &mr, None, None, bar).await?;
     db.put(&tag_key(repo, tag), digest.as_bytes())?;
     Ok(())
 }
@@ -233,6 +233,7 @@ fn process_manifest<'a>(
     repo: &'a str,
     mr: &'a ManifestResponse,
     platform_hint: Option<Platform>,
+    parent_hint: Option<ManifestRef>,
     bar: &'a ProgressBar,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
@@ -258,11 +259,16 @@ fn process_manifest<'a>(
                 platform: None,
                 layers: vec![],
                 children,
+                parent: parent_hint,
             };
             db.put(
                 &manifest_key(repo, &mr.digest),
                 &postcard::to_allocvec(&record)?,
             )?;
+            let parent_for_children = ManifestRef {
+                repo: repo.to_string(),
+                digest: mr.digest.clone(),
+            };
             for child in idx.manifests {
                 bar.set_message(format!("{repo} child {}", short(&child.digest)));
                 let child_mr = match client.fetch_manifest(repo, &child.digest).await {
@@ -276,7 +282,16 @@ fn process_manifest<'a>(
                     os: p.os,
                     arch: p.architecture,
                 });
-                process_manifest(client, db, repo, &child_mr, plat, bar).await?;
+                process_manifest(
+                    client,
+                    db,
+                    repo,
+                    &child_mr,
+                    plat,
+                    Some(parent_for_children.clone()),
+                    bar,
+                )
+                .await?;
             }
         } else {
             let img: ImageManifest =
@@ -292,6 +307,7 @@ fn process_manifest<'a>(
                 platform: platform_hint,
                 layers: layer_digests,
                 children: vec![],
+                parent: parent_hint,
             };
             db.put(
                 &manifest_key(repo, &mr.digest),

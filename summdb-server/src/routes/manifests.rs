@@ -29,6 +29,8 @@ pub struct PutManifestBody {
     pub layers: Vec<LayerInput>,
     #[serde(default)]
     pub children: Vec<ChildRef>,
+    #[serde(default)]
+    pub parent: Option<ManifestRef>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -54,6 +56,7 @@ async fn put_manifest(
         platform: body.platform,
         layers: layer_digests,
         children: body.children,
+        parent: body.parent,
     };
     let key = manifest_key(&repo, &digest);
     let value = postcard::to_allocvec(&record)
