@@ -28,7 +28,28 @@
     .repo-bar .stat { display: flex; flex-direction: column; }
     .repo-bar .stat small { color: var(--pico-muted-color); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .repo-bar .stat strong { font-size: 1.1rem; font-family: var(--pico-font-family-monospace); }
-    .layout { display: grid; grid-template-columns: 320px 1fr; gap: 2rem; align-items: start; }
+    .layout { display: grid; grid-template-columns: 160px 1fr; gap: 2rem; align-items: start; }
+    .nav { display: flex; flex-direction: column; gap: 0.2rem; }
+    .nav-item {
+      padding: 0.5rem 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--pico-color);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .nav-item:hover { background: var(--pico-secondary-background); }
+    .nav-item.active { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+    .tags-view { display: grid; grid-template-columns: 320px 1fr; gap: 2rem; align-items: start; }
+    .layers-view { display: flex; flex-direction: column; gap: 1.5rem; }
+    .layers-table { width: 100%; font-size: 0.85rem; }
+    .layers-table th, .layers-table td { padding: 0.4rem 0.6rem; vertical-align: top; }
+    .layers-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--pico-muted-color); }
+    .layers-table td.digest { font-family: var(--pico-font-family-monospace); word-break: break-all; }
+    .layers-table td.digest a { color: var(--pico-primary); text-decoration: none; cursor: pointer; }
+    .layers-table td.digest a:hover { text-decoration: underline; }
+    .layers-table td.num { font-family: var(--pico-font-family-monospace); text-align: right; white-space: nowrap; }
+    .layers-table td.tags { line-height: 1.6; }
     .tag-item {
       cursor: pointer;
       padding: 0.3rem 0.6rem;
@@ -149,6 +170,14 @@
   </div>
 
   <div class="layout">
+    <nav class="nav">
+      <a class="nav-item" :class="{ active: view === 'tags' }"
+         href="#" @click.prevent="setView('tags')">Tags</a>
+      <a class="nav-item" :class="{ active: view === 'layers' }"
+         href="#" @click.prevent="setView('layers')">Layers</a>
+    </nav>
+
+    <div x-show="view === 'tags'" class="tags-view">
     <section>
       <p class="muted" x-show="status" x-text="status"></p>
       <template x-for="t in tags.slice(0, 50)" :key="t.tag">
@@ -249,6 +278,85 @@
         </template>
       </article>
     </div>
+    </div>
+
+    <div x-show="view === 'layers'" class="layers-view">
+      <template x-if="!stats">
+        <p class="muted">select a repo to view its layers</p>
+      </template>
+      <template x-if="stats && layersStatus">
+        <p class="muted" x-text="layersStatus"></p>
+      </template>
+      <template x-if="stats && layersData">
+        <div>
+          <article>
+            <h3 style="margin: 0 0 0.5rem">Top 20 layers by size</h3>
+            <table class="layers-table">
+              <thead>
+                <tr>
+                  <th style="width: 40%">digest</th>
+                  <th style="width: 10%">size</th>
+                  <th>tags</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="l in layersData.by_size" :key="'s:' + l.digest">
+                  <tr>
+                    <td class="digest">
+                      <a @click.prevent="openLayer(l.digest)" href="#"
+                         x-text="l.digest"></a>
+                    </td>
+                    <td class="num" x-text="formatBytes(l.size)"></td>
+                    <td class="tags">
+                      <template x-for="t in l.tags" :key="'s:' + l.digest + ':' + t">
+                        <span class="tag-chip" x-text="t"></span>
+                      </template>
+                      <span class="muted" x-show="!l.tags.length">—</span>
+                    </td>
+                  </tr>
+                </template>
+                <template x-if="!layersData.by_size.length">
+                  <tr><td colspan="3" class="muted">no layers</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </article>
+
+          <article>
+            <h3 style="margin: 0 0 0.5rem">Top 20 layers by referencing manifests</h3>
+            <table class="layers-table">
+              <thead>
+                <tr>
+                  <th style="width: 40%">digest</th>
+                  <th style="width: 10%">manifests</th>
+                  <th>tags</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="l in layersData.by_manifest_count" :key="'m:' + l.digest">
+                  <tr>
+                    <td class="digest">
+                      <a @click.prevent="openLayer(l.digest)" href="#"
+                         x-text="l.digest"></a>
+                    </td>
+                    <td class="num" x-text="l.manifest_count.toLocaleString()"></td>
+                    <td class="tags">
+                      <template x-for="t in l.tags" :key="'m:' + l.digest + ':' + t">
+                        <span class="tag-chip" x-text="t"></span>
+                      </template>
+                      <span class="muted" x-show="!l.tags.length">—</span>
+                    </td>
+                  </tr>
+                </template>
+                <template x-if="!layersData.by_manifest_count.length">
+                  <tr><td colspan="3" class="muted">no layers</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </article>
+        </div>
+      </template>
+    </div>
   </div>
 
   <script>
@@ -265,6 +373,9 @@
         selectedLayer: null,
         layerManifests: [],
         layerStatus: '',
+        view: 'tags',
+        layersData: null,
+        layersStatus: '',
         async init() {
           try {
             const r = await fetch('/v1/repos');
@@ -286,6 +397,8 @@
           this.activeDigest = null;
           this.selectedLayer = null;
           this.layerManifests = [];
+          this.layersData = null;
+          this.layersStatus = '';
           this.status = 'loading…';
           try {
             const [tagsRes, statsRes] = await Promise.all([
@@ -297,9 +410,33 @@
             if (statsRes.ok) this.stats = await statsRes.json();
             const more = this.tags.length > 50 ? ' (showing 50)' : '';
             this.status = `${this.tags.length} tag${this.tags.length === 1 ? '' : 's'}${more}`;
+            if (this.view === 'layers') this.loadLayers();
           } catch (e) {
             this.status = `error: ${e.message}`;
           }
+        },
+        setView(v) {
+          this.view = v;
+          if (v === 'layers' && this.stats && !this.layersData && !this.layersStatus.startsWith('loading')) {
+            this.loadLayers();
+          }
+        },
+        async loadLayers() {
+          if (!this.repo.trim()) return;
+          this.layersData = null;
+          this.layersStatus = 'loading…';
+          try {
+            const r = await fetch(`/v1/repos/${encodeURIComponent(this.repo)}/layers?limit=20`);
+            if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+            this.layersData = await r.json();
+            this.layersStatus = '';
+          } catch (e) {
+            this.layersStatus = `error: ${e.message}`;
+          }
+        },
+        openLayer(digest) {
+          this.view = 'tags';
+          this.loadLayer(digest);
         },
         async loadManifest(digest) {
           this.activeDigest = digest;
