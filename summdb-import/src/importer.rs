@@ -8,9 +8,11 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use summdb_core::{
     error::SummError,
-    keys::{layer_key, manifest_key},
+    keys::{layer_key, manifest_body_key, manifest_key},
     types::{ChildRef, Digest, LayerRecord, ManifestRecord, ManifestRef, Platform, RepoId},
 };
+
+const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 use summdb_storage::{RepoInterner, StorageEngine};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -242,9 +244,9 @@ fn process_manifest<'a>(
     platform_hint: Option<Platform>,
     parent_hint: Option<ManifestRef>,
     bar: &'a ProgressBar,
-) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<u64>> + Send + 'a>> {
     Box::pin(async move {
-        if is_index(&mr.media_type) {
+        let total_layer_size: u64 = if is_index(&mr.media_type) {
             let idx: Index =
                 serde_json::from_slice(&mr.body).context("parsing index manifest")?;
             let mut children = Vec::with_capacity(idx.manifests.len());
@@ -258,25 +260,11 @@ fn process_manifest<'a>(
                     }),
                 });
             }
-            let record = ManifestRecord {
-                repo: repo_id,
-                digest,
-                media_type: mr.media_type.clone(),
-                size: mr.body.len() as u64,
-                platform: None,
-                layers: vec![],
-                children,
-                parent: parent_hint,
-                tags: vec![],
-            };
-            db.put(
-                &manifest_key(repo_id, &digest),
-                &postcard::to_allocvec(&record)?,
-            )?;
             let parent_for_children = ManifestRef {
                 repo: repo_id,
                 digest,
             };
+            let mut total: u64 = 0;
             for child in idx.manifests {
                 let child_digest: Digest = child.digest.parse().map_err(|e: String| anyhow!(e))?;
                 bar.set_message(format!("{repo_label} child {}", short(&child_digest)));
@@ -291,7 +279,7 @@ fn process_manifest<'a>(
                     os: p.os,
                     arch: p.architecture,
                 });
-                process_manifest(
+                let child_total = process_manifest(
                     client,
                     db,
                     repo_id,
@@ -303,20 +291,39 @@ fn process_manifest<'a>(
                     bar,
                 )
                 .await?;
-            }
-        } else {
-            let img: ImageManifest =
-                serde_json::from_slice(&mr.body).context("parsing image manifest")?;
-            let layer_descs = img.layers;
-            let mut layer_digests: Vec<Digest> = Vec::with_capacity(layer_descs.len());
-            for d in &layer_descs {
-                layer_digests.push(d.digest.parse().map_err(|e: String| anyhow!(e))?);
+                total = total.saturating_add(child_total);
             }
             let record = ManifestRecord {
                 repo: repo_id,
                 digest,
                 media_type: mr.media_type.clone(),
-                size: mr.body.len() as u64,
+                total_layer_size: total,
+                platform: None,
+                layers: vec![],
+                children,
+                parent: parent_hint,
+                tags: vec![],
+            };
+            db.put(
+                &manifest_key(repo_id, &digest),
+                &postcard::to_allocvec(&record)?,
+            )?;
+            total
+        } else {
+            let img: ImageManifest =
+                serde_json::from_slice(&mr.body).context("parsing image manifest")?;
+            let layer_descs = img.layers;
+            let mut layer_digests: Vec<Digest> = Vec::with_capacity(layer_descs.len());
+            let mut total: u64 = 0;
+            for d in &layer_descs {
+                layer_digests.push(d.digest.parse().map_err(|e: String| anyhow!(e))?);
+                total = total.saturating_add(d.size);
+            }
+            let record = ManifestRecord {
+                repo: repo_id,
+                digest,
+                media_type: mr.media_type.clone(),
+                total_layer_size: total,
                 platform: platform_hint,
                 layers: layer_digests.clone(),
                 children: vec![],
@@ -330,8 +337,14 @@ fn process_manifest<'a>(
             for (ld, desc) in layer_digests.iter().zip(&layer_descs) {
                 record_layer_ref(db, ld, desc.size, repo_id, &digest)?;
             }
-        }
-        Ok(())
+            total
+        };
+
+        let compressed = zstd::encode_all(mr.body.as_slice(), ZSTD_COMPRESSION_LEVEL)
+            .context("zstd compressing manifest body")?;
+        db.put(&manifest_body_key(repo_id, &digest), &compressed)?;
+
+        Ok(total_layer_size)
     })
 }
 

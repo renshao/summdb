@@ -1,13 +1,14 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Deserialize;
 use summdb_core::{
     error::SummError,
-    keys::{layer_key, manifest_key, manifest_prefix},
+    keys::{layer_key, manifest_body_key, manifest_key, manifest_prefix},
     types::{ChildRef, Digest, LayerRecord, ManifestRecord, ManifestRef, Platform, RepoId},
 };
 use summdb_storage::StorageEngine;
@@ -17,6 +18,8 @@ use crate::{
     state::AppState,
     views::{manifest_to_view, ManifestView},
 };
+
+const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
 #[derive(Deserialize)]
 pub struct LayerInput {
@@ -40,13 +43,16 @@ pub struct ParentInput {
 #[derive(Deserialize)]
 pub struct PutManifestBody {
     pub media_type: String,
-    pub size: u64,
+    pub total_layer_size: u64,
     pub platform: Option<Platform>,
     pub layers: Vec<LayerInput>,
     #[serde(default)]
     pub children: Vec<ChildInput>,
     #[serde(default)]
     pub parent: Option<ParentInput>,
+    /// Raw manifest JSON. Stored zstd-compressed under the B: key.
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -54,6 +60,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/repos/:repo/manifests/:digest",
             get(get_manifest).put(put_manifest),
+        )
+        .route(
+            "/v1/repos/:repo/manifests/:digest/body",
+            get(get_manifest_body),
         )
         .route("/v1/repos/:repo/manifests", get(list_manifests))
 }
@@ -92,7 +102,7 @@ async fn put_manifest(
         repo: repo_id,
         digest,
         media_type: body.media_type,
-        size: body.size,
+        total_layer_size: body.total_layer_size,
         platform: body.platform,
         layers: layer_digests.clone(),
         children,
@@ -103,11 +113,46 @@ async fn put_manifest(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     state.storage.put(&manifest_key(repo_id, &digest), &value)?;
 
+    if let Some(raw) = body.body.as_deref() {
+        let compressed = zstd::encode_all(raw.as_bytes(), ZSTD_COMPRESSION_LEVEL)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        state
+            .storage
+            .put(&manifest_body_key(repo_id, &digest), &compressed)?;
+    }
+
     for (layer, input) in layer_digests.iter().zip(&body.layers) {
         record_layer_ref(state.storage.as_ref(), layer, input.size, repo_id, &digest)?;
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_manifest_body(
+    State(state): State<AppState>,
+    Path((repo, digest_str)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let digest: Digest = digest_str.parse().map_err(AppError::Internal)?;
+    let repo_id = state.interner.try_lookup(&repo).ok_or(AppError::NotFound)?;
+    let compressed = state
+        .storage
+        .get(&manifest_body_key(repo_id, &digest))?
+        .ok_or(AppError::NotFound)?;
+    let raw = zstd::decode_all(compressed.as_slice())
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let media_type = state
+        .storage
+        .get(&manifest_key(repo_id, &digest))?
+        .and_then(|v| postcard::from_bytes::<ManifestRecord>(&v).ok())
+        .map(|m| m.media_type)
+        .unwrap_or_else(|| "application/json".to_string());
+
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&media_type) {
+        headers.insert(header::CONTENT_TYPE, v);
+    }
+    Ok((headers, raw).into_response())
 }
 
 async fn get_manifest(

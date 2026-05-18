@@ -2,6 +2,7 @@ use crate::types::{Digest, RepoId};
 
 pub const PREFIX_TAG: u8 = b'T';
 pub const PREFIX_MANIFEST: u8 = b'M';
+pub const PREFIX_MANIFEST_BODY: u8 = b'B';
 pub const PREFIX_LAYER: u8 = b'L';
 pub const PREFIX_REPO_INTERN_FORWARD: &[u8] = b"RI";
 pub const PREFIX_REPO_INTERN_REVERSE: &[u8] = b"IR";
@@ -25,6 +26,14 @@ pub fn manifest_key(repo: RepoId, digest: &Digest) -> Vec<u8> {
 pub fn layer_key(digest: &Digest) -> Vec<u8> {
     let mut k = Vec::with_capacity(1 + 32);
     k.push(PREFIX_LAYER);
+    k.extend_from_slice(digest.as_bytes());
+    k
+}
+
+pub fn manifest_body_key(repo: RepoId, digest: &Digest) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + 4 + 32);
+    k.push(PREFIX_MANIFEST_BODY);
+    k.extend_from_slice(&repo.to_be_bytes());
     k.extend_from_slice(digest.as_bytes());
     k
 }

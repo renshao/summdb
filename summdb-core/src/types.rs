@@ -88,7 +88,7 @@ pub struct ManifestRecord {
     pub repo: RepoId,
     pub digest: Digest,
     pub media_type: String,
-    pub size: u64,
+    pub total_layer_size: u64,
     pub platform: Option<Platform>,
     pub layers: Vec<Digest>,
     #[serde(default)]

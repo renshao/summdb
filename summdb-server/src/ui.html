@@ -8,6 +8,26 @@
   <style>
     body { padding: 1rem 2rem; }
     h1.logo { letter-spacing: 0.15em; font-size: 1.8rem; margin: 0 0 1rem; }
+    .repo-bar {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      padding: 0.6rem 1rem;
+      margin-bottom: 1.2rem;
+      background: var(--pico-card-sectioning-background-color);
+      border-radius: 6px;
+    }
+    .repo-bar form { margin: 0; flex: 0 0 320px; }
+    .repo-bar input { margin: 0; }
+    .repo-bar .stats {
+      display: flex;
+      gap: 1.5rem;
+      align-items: baseline;
+      flex: 1;
+    }
+    .repo-bar .stat { display: flex; flex-direction: column; }
+    .repo-bar .stat small { color: var(--pico-muted-color); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .repo-bar .stat strong { font-size: 1.1rem; font-family: var(--pico-font-family-monospace); }
     .layout { display: grid; grid-template-columns: 320px 1fr; gap: 2rem; align-items: start; }
     .tag-item {
       cursor: pointer;
@@ -86,18 +106,50 @@
 <body x-data="summdb()">
   <h1 class="logo">summdb</h1>
 
+  <div class="repo-bar">
+    <form @submit.prevent="loadTags()">
+      <input x-model="repo" type="text" placeholder="repo (e.g. library/ubuntu)" autofocus
+             list="repo-suggestions" autocomplete="off"
+             @input="filterSuggestions()">
+      <datalist id="repo-suggestions">
+        <template x-for="r in filteredRepos" :key="r">
+          <option :value="r"></option>
+        </template>
+      </datalist>
+    </form>
+    <div class="stats">
+      <template x-if="stats">
+        <div class="stat">
+          <small>repo</small>
+          <strong x-text="stats.repo"></strong>
+        </div>
+      </template>
+      <template x-if="stats">
+        <div class="stat">
+          <small>manifests</small>
+          <strong x-text="stats.manifests.toLocaleString()"></strong>
+        </div>
+      </template>
+      <template x-if="stats">
+        <div class="stat">
+          <small>tags</small>
+          <strong x-text="stats.tags.toLocaleString()"></strong>
+        </div>
+      </template>
+      <template x-if="stats">
+        <div class="stat">
+          <small>size</small>
+          <strong x-text="formatBytes(stats.size)"></strong>
+        </div>
+      </template>
+      <template x-if="!stats">
+        <span class="muted">no repo selected</span>
+      </template>
+    </div>
+  </div>
+
   <div class="layout">
     <section>
-      <form @submit.prevent="loadTags()">
-        <input x-model="repo" type="text" placeholder="repo (e.g. library/ubuntu)" autofocus
-               list="repo-suggestions" autocomplete="off"
-               @input="filterSuggestions()">
-        <datalist id="repo-suggestions">
-          <template x-for="r in filteredRepos" :key="r">
-            <option :value="r"></option>
-          </template>
-        </datalist>
-      </form>
       <p class="muted" x-show="status" x-text="status"></p>
       <template x-for="t in tags.slice(0, 50)" :key="t.tag">
         <div class="tag-item"
@@ -128,9 +180,16 @@
               </p>
             </template>
             <p><small>media type</small><br><code x-text="manifest.media_type"></code></p>
-            <p><small>size</small><br><span x-text="manifest.size.toLocaleString() + ' bytes'"></span></p>
+            <p><small>total layer size</small><br>
+              <span x-text="formatBytes(manifest.total_layer_size) + ' (' + manifest.total_layer_size.toLocaleString() + ' bytes)'"></span>
+            </p>
             <p><small>platform</small><br>
               <span x-text="manifest.platform ? manifest.platform.os + '/' + manifest.platform.arch : '—'"></span>
+            </p>
+            <p>
+              <small>raw json</small><br>
+              <a :href="`/v1/repos/${encodeURIComponent(manifest.repo)}/manifests/${encodeURIComponent(manifest.digest)}/body`"
+                 target="_blank" rel="noopener">view body</a>
             </p>
             <template x-if="manifest.tags && manifest.tags.length">
               <p>
@@ -199,6 +258,7 @@
         allRepos: [],
         filteredRepos: [],
         tags: [],
+        stats: null,
         manifest: null,
         activeDigest: null,
         status: '',
@@ -221,15 +281,20 @@
         async loadTags() {
           if (!this.repo.trim()) return;
           this.tags = [];
+          this.stats = null;
           this.manifest = null;
           this.activeDigest = null;
           this.selectedLayer = null;
           this.layerManifests = [];
           this.status = 'loading…';
           try {
-            const r = await fetch(`/v1/repos/${encodeURIComponent(this.repo)}/tags`);
-            if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-            this.tags = await r.json();
+            const [tagsRes, statsRes] = await Promise.all([
+              fetch(`/v1/repos/${encodeURIComponent(this.repo)}/tags`),
+              fetch(`/v1/repos/${encodeURIComponent(this.repo)}/stats`),
+            ]);
+            if (!tagsRes.ok) throw new Error(`${tagsRes.status} ${tagsRes.statusText}`);
+            this.tags = await tagsRes.json();
+            if (statsRes.ok) this.stats = await statsRes.json();
             const more = this.tags.length > 50 ? ' (showing 50)' : '';
             this.status = `${this.tags.length} tag${this.tags.length === 1 ? '' : 's'}${more}`;
           } catch (e) {
@@ -266,6 +331,13 @@
         },
         shortDigest(d) {
           return d.startsWith('sha256:') ? d.slice(7, 19) : d.slice(0, 12);
+        },
+        formatBytes(n) {
+          if (!n) return '0 B';
+          const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+          let i = 0, x = n;
+          while (x >= 1024 && i < units.length - 1) { x /= 1024; i++; }
+          return `${x.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
         },
         async enrichTags(m) {
           if (m.tags && m.tags.length) {
