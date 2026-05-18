@@ -30,6 +30,7 @@ async fn main() {
     let state = AppState::new(engine, interner);
 
     let app = axum::Router::new()
+        .merge(routes::repos::router())
         .merge(routes::tags::router())
         .merge(routes::manifests::router())
         .merge(routes::layers::router())

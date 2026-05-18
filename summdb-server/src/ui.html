@@ -89,7 +89,14 @@
   <div class="layout">
     <section>
       <form @submit.prevent="loadTags()">
-        <input x-model="repo" type="text" placeholder="repo (e.g. library/ubuntu)" autofocus>
+        <input x-model="repo" type="text" placeholder="repo (e.g. library/ubuntu)" autofocus
+               list="repo-suggestions" autocomplete="off"
+               @input="filterSuggestions()">
+        <datalist id="repo-suggestions">
+          <template x-for="r in filteredRepos" :key="r">
+            <option :value="r"></option>
+          </template>
+        </datalist>
       </form>
       <p class="muted" x-show="status" x-text="status"></p>
       <template x-for="t in tags.slice(0, 50)" :key="t.tag">
@@ -189,6 +196,8 @@
     function summdb() {
       return {
         repo: '',
+        allRepos: [],
+        filteredRepos: [],
         tags: [],
         manifest: null,
         activeDigest: null,
@@ -196,6 +205,19 @@
         selectedLayer: null,
         layerManifests: [],
         layerStatus: '',
+        async init() {
+          try {
+            const r = await fetch('/v1/repos');
+            if (r.ok) this.allRepos = await r.json();
+          } catch (_) {}
+          this.filteredRepos = this.allRepos;
+        },
+        filterSuggestions() {
+          const q = this.repo.toLowerCase();
+          this.filteredRepos = q
+            ? this.allRepos.filter(r => r.toLowerCase().includes(q))
+            : this.allRepos;
+        },
         async loadTags() {
           if (!this.repo.trim()) return;
           this.tags = [];

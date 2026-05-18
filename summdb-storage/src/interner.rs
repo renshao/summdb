@@ -61,6 +61,11 @@ impl RepoInterner {
         inner.forward.get(repo).copied()
     }
 
+    pub fn all_repos(&self) -> Vec<String> {
+        let inner = self.inner.read();
+        inner.forward.keys().cloned().collect()
+    }
+
     /// Look up or allocate an id for the given repo. Writes the (forward, reverse)
     /// key pair to the engine before updating the in-memory maps, so a crash never
     /// leaves the cache out of sync with what's persisted.
