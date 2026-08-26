@@ -22,3 +22,6 @@ target
 
 .dbs/
 .claude/
+
+# Local summdb indexes
+*.db
