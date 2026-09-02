@@ -52,21 +52,28 @@ Stop the server before importing — redb is single-writer.
 
 ## Key schema
 
-Single redb table, `&str` keys, `&[u8]` values, postcard-encoded structured values.
+Single redb table (`data`), binary `&[u8]` keys, `&[u8]` values, postcard-encoded structured values.
 
-| Prefix | Key                        | Value |
-|--------|----------------------------|-------|
-| `T:`   | `T:{repo}:{tag}`           | digest as raw UTF-8 |
-| `M:`   | `M:{repo}:{digest}`        | `ManifestRecord { repo, digest, media_type, size, platform, layers: Vec<String> }` |
-| `L:`   | `L:{layer_digest}`         | `LayerRecord { size, manifests: Vec<ManifestRef> }` |
+Repo names are interned to a `u32` (`RepoId`) so they don't repeat in every key; digests are stored as the raw 32 sha256 bytes, not hex. Keys are built by `summdb-core::keys`:
 
-The `L:` map is an inverted index for "which manifests reference this layer." It's maintained on every manifest write via `StorageEngine::merge`, an atomic read-modify-write inside a single redb transaction, so concurrent writers sharing a layer don't lose updates.
+| Prefix | Key layout                              | Value |
+|--------|-----------------------------------------|-------|
+| `T`    | `T` + repo_id(BE u32) + tag bytes       | digest as raw 32 bytes |
+| `M`    | `M` + repo_id(BE u32) + digest(32B)     | `ManifestRecord { repo, digest, media_type, total_layer_size, platform, layers, children, parent, tags }` |
+| `B`    | `B` + repo_id(BE u32) + digest(32B)     | raw manifest JSON, zstd-compressed |
+| `L`    | `L` + digest(32B)                       | `LayerRecord { size, manifests: Vec<ManifestRef> }` |
+| `RI`   | `RI` + repo name bytes                  | repo id (BE u32) — interner forward map |
+| `IR`   | `IR` + repo_id(BE u32)                  | repo name — interner reverse map |
+
+Because redb orders `&[u8]` keys lexicographically, prefix scans come back sorted and the endpoints return that order unchanged: `/v1/repos/:repo/manifests` is ascending by digest (raw-byte order, which is the same order as sorting the lowercase hex), and `/v1/repos/:repo/tags` is ascending by tag name.
+
+The `L` map is an inverted index for "which manifests reference this layer." It's maintained on every manifest write via `StorageEngine::merge`, an atomic read-modify-write inside a single redb transaction, so concurrent writers sharing a layer don't lose updates. The same merge path keeps each manifest's `tags` list in sync when a tag is repointed (`summdb_storage::ops::set_tag`).
 
 ## Workspace
 
 ```
 summdb-core      types, key encoding, error types
-summdb-storage   StorageEngine trait + redb implementation
+summdb-storage   StorageEngine trait + redb implementation, repo interner, tag ops
 summdb-server    axum REST + web UI, default port 1031
 summdb-import    OCI Distribution walker — parallel bulk import with Bearer-token auth
 ```
